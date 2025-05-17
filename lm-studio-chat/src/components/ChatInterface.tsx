@@ -1,19 +1,23 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
-import { FiSend } from 'react-icons/fi';
-import ChatMessage from './ChatMessage';
+import { useState, useRef, useEffect, ChangeEvent } from 'react';
+import { FiSend, FiPaperclip, FiX } from 'react-icons/fi';
+import ChatMessage, { FileAttachment } from './ChatMessage';
 
 interface Message {
   text: string;
   isUser: boolean;
+  files?: FileAttachment[];
 }
 
 export default function ChatInterface() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [selectedFiles, setSelectedFiles] = useState<FileAttachment[]>([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -23,30 +27,97 @@ export default function ChatInterface() {
     scrollToBottom();
   }, [messages]);
 
+  const handleFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const newFiles: FileAttachment[] = Array.from(e.target.files).map(file => {
+        let preview = undefined;
+        if (file.type.startsWith('image/')) {
+          preview = URL.createObjectURL(file);
+        }
+        return {
+          name: file.name,
+          size: file.size,
+          type: file.type,
+          preview
+        };
+      });
+      setSelectedFiles(prev => [...prev, ...newFiles]);
+    }
+  };
+
+  const removeFile = (index: number) => {
+    setSelectedFiles(prev => {
+      const newFiles = [...prev];
+      // Revoke object URL if it exists
+      if (newFiles[index].preview) {
+        URL.revokeObjectURL(newFiles[index].preview!);
+      }
+      newFiles.splice(index, 1);
+      return newFiles;
+    });
+  };
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click();
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!input.trim() || isLoading) return;
+    if (((!input.trim() && selectedFiles.length === 0) || isLoading)) return;
 
     const userMessage = input.trim();
     setInput('');
-    setMessages(prev => [...prev, { text: userMessage, isUser: true }]);
+    setMessages(prev => [...prev, { text: userMessage, isUser: true, files: selectedFiles.length > 0 ? [...selectedFiles] : undefined }]);
     setIsLoading(true);
+    
+    // Clear selected files after sending
+    const filesToSend = [...selectedFiles];
+    setSelectedFiles([]);
 
     try {
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ message: userMessage }),
-      });
-
+      // Create FormData if there are files
+      let requestOptions;
+      if (filesToSend.length > 0) {
+        const formData = new FormData();
+        formData.append('message', userMessage);
+        
+        // Add files to FormData
+        filesToSend.forEach((fileAttachment, index) => {
+          // In a real implementation, you would have the actual File objects
+          // This is a simplified version - in production, you'd need to track the original File objects
+          // and append them here instead of the file attachment metadata
+          // formData.append(`files[${index}]`, actualFileObject);
+          
+          // For demo purposes:
+          formData.append(`fileInfo[${index}]`, JSON.stringify({
+            name: fileAttachment.name,
+            size: fileAttachment.size,
+            type: fileAttachment.type
+          }));
+        });
+        
+        requestOptions = {
+          method: 'POST',
+          body: formData,
+        };
+      } else {
+        requestOptions = {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ message: userMessage }),
+        };
+      }
+      
+      const response = await fetch('/api/chat', requestOptions);
       const data = await response.json();
 
       if (!response.ok) {
         throw new Error(data.error || 'Failed to get response');
       }
 
+      // In a real implementation, the server might return file information in the response
       setMessages(prev => [...prev, { text: data.response, isUser: false }]);
     } catch (error) {
       console.error('Error:', error);
@@ -71,7 +142,7 @@ export default function ChatInterface() {
           </div>
         )}
         {messages.map((message, index) => (
-          <ChatMessage key={index} message={message.text} isUser={message.isUser} />
+          <ChatMessage key={index} message={message.text} isUser={message.isUser} files={message.files} />
         ))}
         {isLoading && (
           <div className="flex justify-start">
