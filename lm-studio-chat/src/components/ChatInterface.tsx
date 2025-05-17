@@ -2,7 +2,15 @@
 
 import { useState, useRef, useEffect, ChangeEvent } from 'react';
 import { FiSend, FiPaperclip, FiX } from 'react-icons/fi';
-import ChatMessage, { FileAttachment } from './ChatMessage';
+import ChatMessage from './ChatMessage';
+
+export interface FileAttachment {
+  name: string;
+  size: number;
+  type: string;
+  preview?: string;
+  content?: string; // Base64 or text content of the file
+}
 
 interface Message {
   text: string;
@@ -29,19 +37,60 @@ export default function ChatInterface() {
 
   const handleFileSelect = (e: ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
-      const newFiles: FileAttachment[] = Array.from(e.target.files).map(file => {
+      Array.from(e.target.files).forEach(file => {
         let preview = undefined;
         if (file.type.startsWith('image/')) {
           preview = URL.createObjectURL(file);
         }
-        return {
-          name: file.name,
-          size: file.size,
-          type: file.type,
-          preview
+        
+        // Read file content
+        const reader = new FileReader();
+        
+        reader.onload = (event) => {
+          try {
+            const newFile: FileAttachment = {
+              name: file.name,
+              size: file.size,
+              type: file.type,
+              preview,
+              content: event.target?.result as string
+            };
+            setSelectedFiles(prev => [...prev, newFile]);
+          } catch (error) {
+            console.error(`Error processing file ${file.name}:`, error);
+            // Add file without content if there was an error
+            const newFile: FileAttachment = {
+              name: file.name,
+              size: file.size,
+              type: file.type,
+              preview
+            };
+            setSelectedFiles(prev => [...prev, newFile]);
+          }
         };
+        
+        reader.onerror = () => {
+          console.error(`Error reading file ${file.name}`);
+          // Add file without content if there was an error
+          const newFile: FileAttachment = {
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            preview
+          };
+          setSelectedFiles(prev => [...prev, newFile]);
+        };
+        
+        if (file.type.startsWith('text/') || 
+            file.type === 'application/json' ||
+            file.type === 'application/xml' ||
+            file.name.endsWith('.md') ||
+            file.name.endsWith('.csv')) {
+          reader.readAsText(file);
+        } else {
+          reader.readAsDataURL(file); // Base64 encode binary files
+        }
       });
-      setSelectedFiles(prev => [...prev, ...newFiles]);
     }
   };
 
@@ -75,30 +124,73 @@ export default function ChatInterface() {
     setSelectedFiles([]);
 
     try {
-      // Create FormData if there are files
+      // Create request options based on whether there are files
       let requestOptions;
       if (filesToSend.length > 0) {
-        const formData = new FormData();
-        formData.append('message', userMessage);
+        // Create a message with file context
+        let messageWithFileContext = userMessage;
         
-        // Add files to FormData
+        // For each file, append its content to the message
         filesToSend.forEach((fileAttachment, index) => {
-          // In a real implementation, you would have the actual File objects
-          // This is a simplified version - in production, you'd need to track the original File objects
-          // and append them here instead of the file attachment metadata
-          // formData.append(`files[${index}]`, actualFileObject);
-          
-          // For demo purposes:
-          formData.append(`fileInfo[${index}]`, JSON.stringify({
-            name: fileAttachment.name,
-            size: fileAttachment.size,
-            type: fileAttachment.type
-          }));
+          try {
+            if (fileAttachment.content) {
+              // For text files, append the content directly
+              if (fileAttachment.type.startsWith('text/') || 
+                  fileAttachment.type === 'application/json' ||
+                  fileAttachment.type === 'application/xml' ||
+                  fileAttachment.name.endsWith('.md') ||
+                  fileAttachment.name.endsWith('.csv')) {
+                // Extract content from base64 if needed
+                let fileContent = fileAttachment.content;
+                if (fileContent.startsWith('data:')) {
+                  // Extract content from data URL
+                  const contentParts = fileContent.split(',');
+                  if (contentParts.length > 1) {
+                    fileContent = contentParts[1];
+                    // Decode base64 if necessary
+                    try {
+                      fileContent = atob(fileContent);
+                    } catch (e) {
+                      console.error('Error decoding base64:', e);
+                      // Continue with encoded content if decoding fails
+                    }
+                  }
+                }
+                
+                // Limit content length to prevent huge messages
+                const maxLength = 10000;
+                if (fileContent.length > maxLength) {
+                  fileContent = fileContent.substring(0, maxLength) + '...\n[Content truncated due to size]';
+                }
+                
+                messageWithFileContext += `\n\nFile: ${fileAttachment.name}\nContent:\n${fileContent}`;
+              } else {
+                // For binary files, just mention the file
+                messageWithFileContext += `\n\nFile: ${fileAttachment.name} (binary file, size: ${fileAttachment.size} bytes)`;
+              }
+            } else {
+              // If content couldn't be read
+              messageWithFileContext += `\n\nFile: ${fileAttachment.name} (content unavailable)`;
+            }
+          } catch (error) {
+            console.error(`Error processing file ${fileAttachment.name}:`, error);
+            messageWithFileContext += `\n\nFile: ${fileAttachment.name} (error processing file)`;
+          }
         });
         
         requestOptions = {
           method: 'POST',
-          body: formData,
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ 
+            message: messageWithFileContext,
+            files: filesToSend.map(file => ({
+              name: file.name,
+              size: file.size,
+              type: file.type
+            }))
+          }),
         };
       } else {
         requestOptions = {
@@ -117,6 +209,7 @@ export default function ChatInterface() {
         throw new Error(data.error || 'Failed to get response');
       }
 
+      console.log('Message sent successfully:', data);
       // In a real implementation, the server might return file information in the response
       setMessages(prev => [...prev, { text: data.response, isUser: false }]);
     } catch (error) {
@@ -153,6 +246,26 @@ export default function ChatInterface() {
         )}
         <div ref={messagesEndRef} />
       </div>
+      
+      {/* Display selected files */}
+      {selectedFiles.length > 0 && (
+        <div className="border-t dark:border-gray-700 p-2">
+          <div className="flex flex-wrap gap-2">
+            {selectedFiles.map((file, index) => (
+              <div key={index} className="flex items-center bg-gray-200 dark:bg-gray-700 rounded-lg p-2">
+                <span className="text-sm truncate max-w-[150px]">{file.name}</span>
+                <button 
+                  onClick={() => removeFile(index)}
+                  className="ml-2 text-gray-500 hover:text-red-500"
+                >
+                  <FiX className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
       <div className="border-t dark:border-gray-700 p-4">
         <form onSubmit={handleSubmit} className="flex gap-2">
           <input
@@ -163,6 +276,24 @@ export default function ChatInterface() {
             className="flex-1 p-2 border dark:border-gray-600 bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
             disabled={isLoading}
           />
+          
+          {/* File upload button */}
+          <button
+            type="button"
+            onClick={triggerFileInput}
+            disabled={isLoading}
+            className="bg-gray-300 dark:bg-gray-600 text-gray-700 dark:text-gray-300 p-2 rounded-lg hover:bg-gray-400 dark:hover:bg-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            <FiPaperclip className="w-6 h-6" />
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            onChange={handleFileSelect}
+            className="hidden"
+            multiple
+          />
+          
           <button
             type="submit"
             disabled={isLoading}

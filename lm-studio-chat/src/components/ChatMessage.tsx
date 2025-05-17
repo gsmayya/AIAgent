@@ -1,12 +1,6 @@
 import { useState } from 'react';
 import { FiFile, FiFileText, FiImage, FiPaperclip } from 'react-icons/fi';
-
-export interface FileAttachment {
-  name: string;
-  size: number;
-  type: string;
-  preview?: string;
-}
+import { FileAttachment } from './ChatInterface';
 
 interface ChatMessageProps {
   message: string;
@@ -103,7 +97,10 @@ export default function ChatMessage({ message, isUser, files }: ChatMessageProps
             />
             <button 
               className="absolute top-2 right-2 bg-white dark:bg-gray-800 text-black dark:text-white rounded-full w-8 h-8 flex items-center justify-center text-xl"
-              onClick={() => setExpandedImage(null)}
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedImage(null);
+              }}
             >
               &times;
             </button>
